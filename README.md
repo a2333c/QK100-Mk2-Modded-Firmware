@@ -16,7 +16,6 @@
 | --- | --- |
 | ![修改前屏幕特写](docs/images/screen-before-detail.jpg) | ![修改后屏幕特写](docs/images/screen-after-detail.jpg) |
 
-完整照片：[修改前](docs/images/screen-before.jpg)、[修改后](docs/images/screen-after.jpg)。
 
 ## 两个固件改了什么
 
