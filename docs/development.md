@@ -37,4 +37,4 @@ Release 提供的是整理源码前已经验证过的应用 1.0.3，SHA256 为 `
 - 屏幕：`tools/build_screen_ui_candidate.py` 及其字模、汇编依赖。
 - 可选图包：`tools/build_island_candidate.py`。
 
-补丁行为、验证限制和刷写步骤分别见 [固件改动说明](firmware-changes.md) 和 [使用说明](../README.md)。
+补丁和刷写步骤分别见 [固件改动说明](firmware-changes.md) 和 [使用说明](../README.md)。
