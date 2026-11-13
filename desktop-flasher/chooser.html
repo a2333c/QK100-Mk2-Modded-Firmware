@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>选择设备</title>
+<style>body{background:#141922;color:#e7edf7;font:14px 'Segoe UI','Microsoft YaHei';padding:22px}h1{font-size:18px}button{width:100%;background:#253347;border:1px solid #3c526d;border-radius:8px;color:inherit;padding:12px;margin:5px 0;text-align:left;cursor:pointer}.muted{color:#a0adc1}#cancel{text-align:center;background:#202632}</style>
+<h1>选择要连接的 QK100 设备</h1><p class="muted">仅列出本应用支持的键盘、IAP 和屏幕接口。选择不会开始刷写。</p>
+<div id="devices"></div><p id="empty" class="muted">正在等待设备…</p><button id="cancel">取消</button>
+<script>
+const el=document.getElementById('devices');
+window.deviceChooser.onDevices(devices=>{
+  el.replaceChildren(); document.getElementById('empty').hidden=devices.length>0;
+  for(const d of devices){const b=document.createElement('button');b.textContent=`${d.name} · ${d.vendorId.toString(16).padStart(4,'0')}:${d.productId.toString(16).padStart(4,'0')}`;b.onclick=()=>window.deviceChooser.select(d.deviceId);el.appendChild(b);}
+});
+document.getElementById('cancel').onclick=()=>window.deviceChooser.select('');
+window.deviceChooser.ready();
+</script></html>

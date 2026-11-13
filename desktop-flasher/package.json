@@ -1,0 +1,43 @@
+{
+  "name": "qk100-firmware-desktop",
+  "version": "1.0.3",
+  "private": true,
+  "description": "QK100 Mk2 standalone firmware updater",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "node prepare.cjs && electron .",
+    "prepare-assets": "node prepare.cjs",
+    "build": "node prepare.cjs && electron-builder --win portable --x64",
+    "test": "node prepare.cjs && node --test shell.test.cjs",
+    "verify-package": "node verify-package.cjs"
+  },
+  "devDependencies": {
+    "electron": "^40.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "local.qk100.firmware",
+    "productName": "QK100 Firmware Updater",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.cjs",
+      "policy.cjs",
+      "preload.cjs",
+      "chooser.html",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "QK100-Firmware-Updater-${version}.exe"
+    }
+  }
+}

@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>QK100 Mk2 刷机工具</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; padding:24px; background:#12151a; color:#e6e9ef;
+         font:14px/1.6 "Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:#8b95a5; font-size:13px; margin-bottom:20px; }
+  .card { background:#1a1f27; border:1px solid #2a3240; border-radius:10px; padding:16px 18px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
+  .tag { font-size:11px; padding:1px 7px; border-radius:999px; background:#243040; color:#93b4d8; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:10px; }
+  button { background:#2b6cf6; color:#fff; border:0; border-radius:7px; padding:8px 16px;
+           font-size:13px; cursor:pointer; font-family:inherit; }
+  button.ghost { background:#28313d; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .hint { color:#7d8798; font-size:12px; }
+  .ok { color:#4ade80; } .err { color:#f87171; } .warn { color:#fbbf24; }
+  #log { background:#0d1014; border:1px solid #232b36; border-radius:8px; padding:12px;
+         height:260px; overflow:auto; font:12px/1.55 Consolas,monospace; white-space:pre-wrap; }
+  .file { color:#9aa7b8; font-size:12px; }
+</style>
+</head>
+<body>
+<h1>QK100 Mk2 刷机工具</h1>
+<div class="sub">只做两件事：刷键盘主控固件、刷屏幕模组固件。使用官方 IAP / OTA 协议，固件在写入前校验。</div>
+
+<div class="card">
+  <h2>① 键盘主控固件 <span class="tag">36B0:3059 → 33FF</span></h2>
+  <div class="row">
+    <select id="mainPreset"><option value="official">官方 v137</option><option value="nobrightfloor">修改版 v137 · 灯组开关保持亮度</option><option value="local">本地文件</option></select>
+    <input type="file" id="mainFile" accept=".bin" disabled>
+    <span class="file" id="mainInfo">使用内置官方 v137；本地文件须保持 v137 型号与布局</span>
+  </div>
+  <div class="row">
+    <button class="ghost" id="btnMainCheck">检测有线主控</button>
+    <button id="btnMainPrep">1. 让键盘进入 IAP 模式</button>
+    <button id="btnMainLink" disabled>2. 连接 IAP 设备</button>
+    <button id="btnMainFlash" disabled>3. 写入固件</button>
+    <button class="ghost" id="btnDiag">诊断</button>
+  </div>
+  <div class="hint">顺序不能乱：先进入 IAP（键盘会断开重连为 36B0:33FF），再点第 2 步选那个新设备，最后写入。<br>
+  选择设备后应用仅接受对应的有线升级接口；不会使用 2.4G 接收器。</div>
+</div>
+
+<div class="card">
+  <h2>② 屏幕模组固件 <span class="tag">1919:1919</span></h2>
+  <div class="row">
+    <select id="scrPreset"><option value="official">官方 v120</option><option value="v20">修改版 v20</option><option value="local">本地文件</option></select>
+    <input type="file" id="scrFile" accept=".bin" disabled>
+    <span class="file" id="scrInfo">默认使用内置官方 v120</span>
+  </div>
+  <div class="row">
+    <button id="btnScrLink">连接屏幕</button>
+    <button id="btnScrFlash" disabled>写入固件</button>
+  </div>
+  <div class="hint">有线模式下，先点“连接屏幕”并选择键盘，启用屏幕 USB 接口；提示准备完成后，再点“选择 LCD 屏幕”。连接只核查通信，点击“写入固件”后才会升级。</div>
+</div>
+
+<div class="card">
+  <h2>③ 屏幕图片包 <span class="tag">1919:1919 · 慢（约 3–5 分钟）</span></h2>
+  <div class="row">
+    <select id="imgPreset"><option value="official">官方 v120 图包</option><option value="alpha128">半透明 alpha128 图包（可选）</option><option value="local">本地文件</option></select>
+    <input type="file" id="imgFile" accept=".bin" disabled>
+    <span class="file" id="imgInfo">默认使用内置官方 v120 图片包（11.7 MB）</span>
+  </div>
+  <div class="row">
+    <button id="btnImgFlash" disabled>写入图片包</button>
+    <span class="hint">v20 可单独升级。半透明图包用于资源背景样式，已经刷过无需重刷。<br>先连接屏幕。写入图包后会继续写入上面所选屏幕程序；中途请勿拔线。</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>日志</h2>
+  <div id="log"></div>
+  <div class="row" style="margin-top:10px">
+    <button class="ghost" id="btnClear">清空</button>
+    <button class="ghost" id="btnExport">导出日志</button>
+    <span class="hint" id="status">就绪</span>
+  </div>
+</div>
+
+
+<script>
+"use strict";
+// Extracted from pinned QKCFG official IAP/OTA framing. No device writes at startup.
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const records = [];
+function log(message, cls) {
+  const entry = {time: new Date().toISOString(), message, level: cls || "info"};
+  records.push(entry);
+  const line = document.createElement("div"); line.className = cls || "";
+  line.textContent = "[" + new Date().toLocaleTimeString("zh-CN", {hour12:false}) + "] " + message;
+  $("log").appendChild(line); $("log").scrollTop = $("log").scrollHeight;
+}
+function setStatus(message) { $("status").textContent = message; }
+function hex(data) { return Array.from(data, b => b.toString(16).padStart(2,"0")).join(""); }
+function unhex(value) { return Uint8Array.from(value.match(/../g), b => parseInt(b,16)); }
+function join(...arrays) {
+  const result = new Uint8Array(arrays.reduce((n,a)=>n+a.length,0));
+  let offset=0; for(const a of arrays) {result.set(a,offset);offset+=a.length;} return result;
+}
+function crc16(data) {
+  let crc=0xffff;
+  for(const b of data) {crc^=b;for(let i=0;i<8;i++)crc=(crc&1)?((crc>>>1)^0xa001):(crc>>>1);}
+  return crc&0xffff;
+}
+function crc32(data) {
+  let crc=0xffffffff;
+  for(const b of data) {crc^=b;for(let i=0;i<8;i++)crc=(crc&1)?((crc>>>1)^0xedb88320):(crc>>>1);}
+  return (crc^0xffffffff)>>>0;
+}
+function appendCrc16(data) {const c=crc16(data);return join(data,Uint8Array.of(c>>>8,c&255));}
+function sum16(data) {return data.reduce((n,b)=>(n+b)&65535,0);}
+function appendSum16(data) {const c=sum16(data);return join(data,Uint8Array.of(c&255,c>>>8));}
+function u16(data,offset) {return data[offset]|(data[offset+1]<<8);}
+function u32(data,offset) {return new DataView(data.buffer,data.byteOffset,data.byteLength).getUint32(offset,true);}
+function put32(data,offset,value) {new DataView(data.buffer,data.byteOffset,data.byteLength).setUint32(offset,value,true);}
+async function sha256(data) {return hex(new Uint8Array(await crypto.subtle.digest("SHA-256",data)));}
+const MAIN_HEADER=unhex("494e4743484950530c494e473931363830435f5442ffffff0c48535f4b425f57485f563031ffffffffffffffffffffff56302e302e3156302e302e310002653bffff000123030000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0070020200230300ffffffffffffffffffffffffd5ec");
+const SCREEN_HEADER=unhex("4142494e01000000f442546a48bd050042d4f474cc23001000000000c08d000000200010f442540a000000000000000000000000011e000800000000e2d3575e");
+const SCREEN_INFO=unhex("aabb19191919200101010002ac0040011e03");
+const SCREEN_HASHES={
+  f4d0dc14baa423cbea0946b31d34cf0fe61fa383cc103d94943b5a0a7267c68f:"官方 v120",
+  ea159057a2e91d488ebe7a74e8e05e53f13933cde569339013a3ba409e618ab4:"修改版 v20"
+};
+const BAD_V5="e03ea76347e38d7f40a77bd9d2204748587afa88b8a58102d9e4cef362e0aaaa";
+const MAIN_PRESETS={
+  official:{path:"/fw/main.bin",sha256:"2a9d951f98b2d570a07f069eeefac77f60d1cbfebc01f133dc34cb5e8fb0aa03",label:"官方 v137"},
+  nobrightfloor:{path:"/fw/main-nobrightfloor.bin",sha256:"52904d7d6e767ea5195862a54c84fc922a022c2bfaf6370937c7b4f864c6e749",label:"修改版 v137 · 灯组开关保持亮度"}
+};
+const IMAGE_PRESETS={
+  official:{path:"/fw/screen-image.bin",sha256:"50beaa063d4a2464fb7525094c6e49a5bf8ba0ab059c61a1a70ad5c6acda5b9d",label:"官方 v120 图包"},
+  alpha128:{path:"/fw/screen-image-alpha128.bin",sha256:"281dd4618882036daa9058f2213efcd33a5dd76550b5e5375467b53e8a938c7f",label:"半透明 alpha128 图包（可选）"}
+};
+async function validateMain(data) {
+  if(data.length!==205696) throw Error("仅支持 QK100 Mk2 v137 或保持同一布局的修改版（205696字节）");
+  if(hex(data.subarray(0x28060,0x28062))!=="1201" || u16(data,0x28068)!==0x36b0 || u16(data,0x2806a)!==0x3059 || hex(data.subarray(0x29a5a,0x29a60))!=="aabbb0365930")throw Error("主控载荷中的 USB 型号和能力表不是 QK100 Mk2");
+  for(let i=0;i<128;i++) {
+    // Lengths and their CRCs may vary; model/load/entry and block profile must match.
+    if([62,63,68,69,70,71,110,111,112,113,126,127].includes(i))continue;
+    if(data[i]!==MAIN_HEADER[i])throw Error("主控型号、加载地址或头部配置不匹配（字节 "+i+"）");
+  }
+  if(u32(data,110)!==data.length-128)throw Error("主控载荷长度不匹配");
+  if((data[62]<<8|data[63])!==crc16(data.subarray(128)))throw Error("主控载荷 CRC16 错误");
+  if((data[126]<<8|data[127])!==crc16(data.subarray(0,126)))throw Error("主控头部 CRC16 错误");
+  const blockSize=u16(data,66);
+  if(blockSize!==256 || u32(data,106)!==0x02027000 || u32(data,68)!==Math.ceil((data.length-128)/blockSize))throw Error("主控块大小或加载地址不匹配");
+  return {bytes:data.length,sha256:await sha256(data),blockSize};
+}
+async function validateScreen(data) {
+  const hash=await sha256(data);
+  if(hash===BAD_V5)throw Error("已知故障 v5 固件，禁止写入");
+  if(!SCREEN_HASHES[hash])throw Error("屏幕文件不是已核查的官方 v120 或 v20，禁止写入");
+  if(data.length<0x85d2 || data.length>0x7f000)throw Error("屏幕文件长度不匹配");
+  for(let i=0;i<12;i++)if(data[i]!==SCREEN_HEADER[i])throw Error("屏幕 ABIN 头不匹配");
+  for(let i=20;i<60;i++)if(data[i]!==SCREEN_HEADER[i])throw Error("屏幕加载地址、入口或型号字段不匹配");
+  if(u32(data,12)!==data.length-64)throw Error("屏幕载荷长度不匹配");
+  if(u32(data,16)!==crc32(data.subarray(64)))throw Error("屏幕载荷 CRC32 错误");
+  if(u32(data,60)!==crc32(data.subarray(0,60)))throw Error("屏幕头部 CRC32 错误");
+  if(hex(data.subarray(0x85c0,0x85d2))!==hex(SCREEN_INFO))throw Error("屏幕固件型号与尺寸不匹配");
+  return {bytes:data.length,sha256:hash,label:SCREEN_HASHES[hash]};
+}
+async function validateImage(data) {
+  const hash=await sha256(data);
+  const selected=Object.values(IMAGE_PRESETS).find(p=>p.sha256===hash);
+  if(data.length!==11744376 || !selected)throw Error("图包不是已核查的完整官方 v120 或 alpha128，禁止擦除或写入");
+  return {bytes:data.length,sha256:hash,label:selected.label};
+}
+function boardFrames(payload) {
+  const count=Math.ceil(payload.length/56);
+  if(!count || count>256)throw Error("IAP 命令长度超限");
+  const result=[];
+  for(let i=0;i<count;i++) {
+    const part=payload.subarray(i*56,(i+1)*56), frame=new Uint8Array(63);
+    frame.set([0xaa,0,count-i-1,i===0?0x80:0,part.length,0]);frame.set(part,6);
+    let checksum=0;for(let j=1;j<6+part.length;j++)checksum^=frame[j];
+    frame[6+part.length]=checksum;result.push(frame);
+  } return result;
+}
+function buildMainStart(data) {return appendCrc16(join(Uint8Array.of(0xa0,128,0),data.subarray(0,128)));}
+function buildMainWrite(payload,index,blockSize) {
+  const blocks=Math.ceil(payload.length/blockSize), offset=index*blockSize;
+  if(index<0 || index>=blocks)throw Error("主控块号超限");
+  const part=payload.subarray(offset,offset+blockSize), data=new Uint8Array(9+part.length);
+  data[0]=0xa1;data[1]=(part.length+6)&255;data[2]=(part.length+6)>>>8;
+  const block=index===blocks-1?65535:index;data[3]=block&255;data[4]=block>>>8;
+  put32(data,5,offset);data.set(part,9);return appendCrc16(data);
+}
+function buildMainSwitch() {return appendCrc16(Uint8Array.of(0xa4,2,0,0xf4,1));}
+function bootFrame() {const result=new Uint8Array(63);result.set([0xaa,0,0,0x80,7,0,0xc0,2,0,0x64,0,0x69,0x0f,0x47,0]);return result;}
+function parseBoardAck(data) {
+  // Official ACK parser accepts direct B0 or AA envelope. No prefix scanning.
+  if(data.length>=2 && data[0]===0xb0)return {errCode:data[1],rspCmd:data.length>2&&data[2]!==0?data[2]:null};
+  if(data.length>=8 && data[0]===0xaa && data[6]===0xb0)return {errCode:data[7],rspCmd:data.length>8&&data[8]!==0?data[8]:null};
+  return null;
+}
+function parseScreenStatus(data) {
+  if(data.length!==64 || data[0]!==0xff || ![0x61,0x64,0x65,0x66,0x68,0x70].includes(data[1]))throw Error("未知或错位的屏幕 OTA 回包");
+  if(u16(data,3)!==sum16(data.subarray(0,3)))throw Error("屏幕 OTA 回包校验错误");
+  return {command:data[1],status:data[2]};
+}
+function buildUpgradeStart(size) {const frame=new Uint8Array(18);frame.set([0xff,0x64,1,48,0]);put32(frame,5,size);return appendSum16(frame);}
+function firmwarePackets(data) {
+  const result=[];for(let off=0;off<data.length;off+=48){const part=new Uint8Array(48);part.set(data.subarray(off,off+48));result.push(appendSum16(join(Uint8Array.of(0xff,0x68),part)));}return result;
+}
+function imageControl(command,payload){return appendSum16(join(Uint8Array.of(0xff,command,1,payload.length&255,payload.length>>>8),payload));}
+function imagePacket(offset,bytes) {
+  if(offset<0 || offset>=0x1000000 || bytes.length>57)throw Error("图片偏移或数据长度超限");
+  const frame=new Uint8Array(62);frame.set([0xff,0x66,offset&255,(offset>>>8)&255,(offset>>>16)&255]);frame.set(bytes,5);return appendSum16(frame);
+}
+function collections(dev) {const result=[];const walk=list=>{for(const c of list||[]){result.push(c);walk(c.children);}};walk(dev.collections);return result;}
+function reportBytes(report) {return Math.ceil((report.items||[]).reduce((n,item)=>n+item.reportSize*item.reportCount,0)/8);}
+function exactDevice(dev,vid,pid,usagePage,usage,reportId,bytes) {
+  return dev.vendorId===vid && dev.productId===pid && collections(dev).some(c=>c.usagePage===usagePage && c.usage===usage && (c.outputReports||[]).some(r=>r.reportId===reportId && reportBytes(r)===bytes));
+}
+async function choose(vid,pid,page,usage,id,size,label) {
+  if(!navigator.hid)throw Error("桌面运行环境不支持 WebHID");
+  const devices=await navigator.hid.requestDevice({filters:[{vendorId:vid,productId:pid,usagePage:page,usage}]});
+  if(!devices.length)throw Error("未选择或未发现 "+label+" 接口；请查看上方设备检测日志");
+  const matches=devices.filter(d=>exactDevice(d,vid,pid,page,usage,id,size));
+  if(matches.length!==1)throw Error("需要唯一的 "+label+" 升级接口，实际匹配 "+matches.length+" 个");
+  const dev=matches[0];if(!dev.opened)await dev.open();log("已连接 "+label+"："+(dev.productName||"未知名称"));return dev;
+}
+class Reports {
+  constructor(dev,id) {
+    this.dev=dev;this.id=id;this.queue=[];this.detached=false;
+    this.handler=event=>{if(event.reportId!==id)return;const data=new Uint8Array(event.data.buffer,event.data.byteOffset,event.data.byteLength).slice();this.queue.push(data);};
+    dev.addEventListener("inputreport",this.handler);
+  }
+  detach(){this.dev.removeEventListener("inputreport",this.handler);this.detached=true;}
+  async idle() {
+    // Only before transactions. Any queued IAP error is preserved as a failure.
+    for(const data of this.queue){const ack=parseBoardAck(data);if(ack && ack.errCode)throw Error("此前 IAP 错误：0x"+ack.errCode.toString(16));}
+    this.queue.length=0;await sleep(50);
+    if(this.queue.length)throw Error("设备输入未空闲，请关闭其他配置或升级窗口");
+  }
+  async next(timeout) {
+    const deadline=Date.now()+timeout;
+    while(Date.now()<deadline){if(this.queue.length)return this.queue.shift();if(!this.dev.opened)throw Error("设备已断开");await sleep(5);}
+    throw Error("设备应答超时；未重发、复位或继续写入");
+  }
+  async boardAck(command,timeout) {
+    const deadline=Date.now()+timeout;
+    while(Date.now()<deadline){const data=await this.next(Math.max(1,deadline-Date.now()));const ack=parseBoardAck(data);if(!ack)continue;
+      if(ack.errCode!==0)throw Error("IAP 拒绝命令 0x"+command.toString(16)+"：错误 0x"+ack.errCode.toString(16));
+      if(ack.rspCmd!==null && ack.rspCmd!==command)throw Error("IAP ACK 命令不匹配，期望 0x"+command.toString(16)+"，收到 0x"+ack.rspCmd.toString(16));
+      log("IAP 命令 0x"+command.toString(16)+" 已确认"+(ack.rspCmd===null?"（应答未携带命令回显）":""),"ok");return ack;
+    }throw Error("IAP 应答超时");
+  }
+  async screenAck(command,status,timeout=15000) {
+    const response=parseScreenStatus(await this.next(timeout));
+    if(response.command!==command || response.status!==status)throw Error("屏幕 OTA 状态不匹配：期望 "+command.toString(16)+"/"+status+"，收到 "+response.command.toString(16)+"/"+response.status);
+    return response;
+  }
+}
+async function send(dev,id,data,size) {
+  if(data.length>size)throw Error("报告超长，禁止截断");
+  const frame=new Uint8Array(size);frame.set(data);await dev.sendReport(id,frame);
+}
+async function sendBoard(dev,payload){for(const frame of boardFrames(payload))await send(dev,63,frame,63);}
+async function normalScreen(reports,command,length=0) {
+  await send(reports.dev,0,Uint8Array.of(0xaa,command,0,0,0,length),64);
+  const data=await reports.next(2500);
+  if(data.length!==64 || data[0]!==0xaa || data[1]!==command || data[7]===0x0f)throw Error("屏幕普通通信拒绝或回包不匹配：0x"+command.toString(16));
+  return data;
+}
+async function normalConfig(reports,command) {
+  // Main configuration interface, not the FF00 IAP transport or LCD protocol.
+  await send(reports.dev,0,Uint8Array.of(0xaa,command,0,0,0),64);
+  const data=await reports.next(2500);
+  if(data.length!==64 || data[0]!==0xaa || data[1]!==command || data[7]!==0x55)throw Error("主控屏幕控制应答拒绝或不匹配：0x"+command.toString(16));
+  return data;
+}
+async function enableScreenUsb() {
+  const dev=await choose(0x36b0,0x3059,0xff60,0x61,0,64,"屏幕控制主控");
+  const reports=new Reports(dev,0);let started=false,primary=null,enabled=false;
+  try {
+    await normalConfig(reports,0x10);started=true;
+    const before=await normalConfig(reports,0xe2);
+    if(before[8]!==0 && before[8]!==1)throw Error("主控返回未知的屏幕 USB 状态，停止连接");
+    records.push({time:new Date().toISOString(),screenUsbBefore:before[8]});
+    if(before[8]===0) {
+      log("屏幕 USB 接口未启用，按官方网页流程开启");
+      await normalConfig(reports,0xe0);
+      const after=await normalConfig(reports,0xe2);
+      if(after[8]!==1)throw Error("屏幕 USB 开启后状态未确认，停止连接");
+      enabled=true;log("屏幕 USB 接口已启用，等待设备枚举","ok");
+    } else log("主控确认屏幕 USB 接口已启用");
+  } catch(e){primary=e;throw e;}
+  finally {
+    try {if(started)await normalConfig(reports,0x11);}
+    catch(e){if(!primary)throw e;log("主控配置会话结束失败："+e.message,"warn");}
+    finally {reports.detach();if(dev.opened)await dev.close();}
+  }
+  // Official ordinary screen-connect helper waits two seconds after E0.
+  if(enabled)await sleep(2000);
+}
+async function screenPreflight(reports) {
+  await reports.idle();await normalScreen(reports,0x10);
+  let info,metadata,primary;
+  try {info=await normalScreen(reports,0x12,18);metadata=await normalScreen(reports,0x14,56);}
+  catch(e){primary=e;throw e;}
+  finally {try {await normalScreen(reports,0x11);}catch(e){if(!primary)throw e;}}
+  if(hex(info.subarray(8,14))!==hex(SCREEN_INFO.subarray(0,6)) || u16(info,14)!==0x120 || u16(info,20)!==172 || u16(info,22)!==320)throw Error("设备不是已核查的 QK100 Mk2 v120 屏幕");
+  const snapshot={info:hex(info),themeMetadata:hex(metadata.subarray(8,64)),backupScope:"屏幕信息与56字节主题配置，不是Flash备份"};
+  log("屏幕通信和尺寸已核对；主题配置已记录");records.push({time:new Date().toISOString(),snapshot});return snapshot;
+}
+let operation=false,kbdAppDev=null,kbdBootDev=null,kbdAck=null,scrDev=null,scrReports=null;
+let preparedMain=null,preparedMainInfo=null;
+let screenFinished=false,mainFinished=false,writeKind=null,screenSnapshot=null;
+let screenUsbReady=false;
+function refreshControls() {
+  for(const node of document.querySelectorAll("button,input,select"))node.disabled=operation;
+  if(operation)return;
+  $("btnMainLink").disabled=false;
+  $("btnMainFlash").disabled=!(preparedMain&&kbdBootDev&&kbdBootDev.opened&&!mainFinished);
+  $("btnScrFlash").disabled=!(scrDev&&scrDev.opened&&!screenFinished);
+  $("btnImgFlash").disabled=!(scrDev&&scrDev.opened&&!screenFinished);
+  $("scrFile").disabled=$("scrPreset").value!=="local";
+  $("mainFile").disabled=$("mainPreset").value!=="local";
+  $("imgFile").disabled=$("imgPreset").value!=="local";
+}
+async function quarantine(kind) {
+  log("写入流程中断；通信位置未知。请重新连接设备后再操作，未自动重发或复位。","warn");
+  if(kind==="main") {
+    if(kbdAck)kbdAck.detach();kbdAck=null;
+    for(const dev of [kbdBootDev,kbdAppDev])if(dev&&dev.opened)try{await dev.close();}catch(_){}
+    kbdBootDev=null;kbdAppDev=null;mainFinished=true;
+  } else {
+    if(scrReports)scrReports.detach();scrReports=null;
+    if(scrDev&&scrDev.opened)try{await scrDev.close();}catch(_){}
+    scrDev=null;screenFinished=true;
+  }
+}
+function guard(fn) {return async()=>{if(operation)return;operation=true;if(window.desktopFlasher)window.desktopFlasher.setBusy(true);refreshControls();try{await fn();}catch(e){log("✗ "+(e.message||e),"err");setStatus("操作停止："+(e.message||e));if(writeKind)await quarantine(writeKind);}finally{writeKind=null;operation=false;if(window.desktopFlasher)window.desktopFlasher.setBusy(false);refreshControls();}};}
+async function asset(path){const response=await fetch(path,{cache:"no-store"});if(!response.ok)throw Error("内置固件读取失败："+path+" HTTP "+response.status);return new Uint8Array(await response.arrayBuffer());}
+async function loadMainBin(){
+  const preset=$("mainPreset").value;
+  if(preset==="local"){const file=$("mainFile").files[0];if(!file)throw Error("请选择本地主控固件");return new Uint8Array(await file.arrayBuffer());}
+  const selected=MAIN_PRESETS[preset];if(!selected)throw Error("未知主控预选");
+  const data=await asset(selected.path);if(await sha256(data)!==selected.sha256)throw Error("内置主控预选校验失败");return data;
+}
+async function loadScreenBin(){const preset=$("scrPreset").value;if(preset==="local"){const file=$("scrFile").files[0];if(!file)throw Error("请选择本地屏幕文件");return new Uint8Array(await file.arrayBuffer());}return asset(preset==="v20"?"/fw/screen-v20.bin":"/fw/screen-app.bin");}
+async function loadImageBin(){
+  const preset=$("imgPreset").value;
+  if(preset==="local"){const file=$("imgFile").files[0];if(!file)throw Error("请选择本地图包");return new Uint8Array(await file.arrayBuffer());}
+  const selected=IMAGE_PRESETS[preset];if(!selected)throw Error("未知图包预选");
+  const data=await asset(selected.path);if(await sha256(data)!==selected.sha256)throw Error("内置图包预选校验失败");return data;
+}
+async function prepareMain() {
+  const data=await loadMainBin(),info=await validateMain(data);
+  preparedMain=data.slice();preparedMainInfo=info;log("主控文件已校验并锁定："+info.bytes+"字节 SHA256 "+info.sha256);
+  log("主控选择："+($("mainPreset").value==="local"?"本地文件":MAIN_PRESETS[$("mainPreset").value].label));
+}
+async function enterIapMode() {
+  await prepareMain();
+  kbdAppDev=await choose(0x36b0,0x3059,0xff00,1,63,63,"有线主控");
+  if(kbdAck)kbdAck.detach();kbdAck=new Reports(kbdAppDev,63);await kbdAck.idle();
+  // This is already an official AA transport frame. Do not envelope it again.
+  writeKind="main";await send(kbdAppDev,63,bootFrame(),63);
+  await kbdAck.boardAck(0xc0,2500);
+  writeKind=null;setStatus("Boot 请求已确认，请连接 IAP 设备");
+}
+async function linkIapDevice() {
+  // Supports a device already in IAP, but validates/pins the file before opening it.
+  if(!preparedMain)await prepareMain();
+  kbdBootDev=await choose(0x36b0,0x33ff,0xff00,1,63,63,"主控 IAP");
+  if(kbdAck)kbdAck.detach();kbdAck=new Reports(kbdBootDev,63);mainFinished=false;setStatus("IAP 已连接，待写入");
+}
+async function boardTransaction(payload,command,timeout,delay=0) {
+  await kbdAck.idle();await sendBoard(kbdBootDev,payload);if(delay)await sleep(delay);await kbdAck.boardAck(command,timeout);
+}
+async function verifyMainReappearance() {
+  const deadline=Date.now()+15000;
+  while(Date.now()<deadline) {
+    const devices=await navigator.hid.getDevices();
+    const boot=devices.some(d=>exactDevice(d,0x36b0,0x33ff,0xff00,1,63,63));
+    const app=devices.filter(d=>exactDevice(d,0x36b0,0x3059,0xff00,1,63,63));
+    if(!boot&&app.length===1) {
+      const dev=app[0];
+      try {if(!dev.opened)await dev.open();log("主控 APP 有线接口已重新出现并可打开","ok");return true;}
+      catch(_){}finally{try{if(dev.opened)await dev.close();}catch(_){}}
+    }
+    await sleep(100);
+  }
+  return false;
+}
+async function flashMainFirmware() {
+  if(!preparedMain || !kbdBootDev || !kbdBootDev.opened)throw Error("先校验固件并连接 IAP");
+  const data=preparedMain,info=await validateMain(data);
+  if(info.sha256!==preparedMainInfo.sha256)throw Error("锁定固件发生变化");
+  log("开始主控升级："+info.sha256);setStatus("主控写入中");writeKind="main";
+  await boardTransaction(buildMainStart(data),0xa0,8000,400);
+  const payload=data.subarray(128),blocks=Math.ceil(payload.length/info.blockSize);
+  for(let i=0;i<blocks;i++) {
+    const offset=i*info.blockSize,required=i===0||i===blocks-1||offset%4096===0||(i>0&&i%192===0);
+    await kbdAck.idle();await sendBoard(kbdBootDev,buildMainWrite(payload,i,info.blockSize));
+    await sleep(offset%4096===0?800:120);
+    if(required)await kbdAck.boardAck(0xa1,4000);
+    else {for(const packet of kbdAck.queue){const ack=parseBoardAck(packet);if(ack&&(ack.errCode!==0||(ack.rspCmd!==null&&ack.rspCmd!==0xa1)))throw Error("主控数据块出现错误应答");}kbdAck.queue.length=0;}
+    setStatus("主控写入中 "+Math.round((i+1)/blocks*100)+"%");
+  }
+  await boardTransaction(buildMainSwitch(),0xa4,3000);
+  mainFinished=true;kbdAck.detach();await kbdBootDev.close();
+  const reappeared=await verifyMainReappearance();
+  setStatus(reappeared?"主控升级应答通过，APP 接口已重新出现":"写入和切换应答通过，等待确认键盘已正常启动");
+  log(reappeared?"主控流程完成；请确认实体键盘工作正常":"未观察到 APP 接口恢复，不能确认启动正常",reappeared?"ok":"warn");
+}
+async function connectScreen() {
+  if(scrReports)scrReports.detach();if(scrDev&&scrDev.opened)await scrDev.close();
+  scrDev=null;scrReports=null;screenFinished=false;
+  const known=(await navigator.hid.getDevices()).filter(d=>exactDevice(d,0x1919,0x1919,0xff,1,0,64));
+  if(known.length>1)throw Error("检测到多个已授权屏幕，停止连接");
+  if(!known.length && !screenUsbReady) {
+    await enableScreenUsb();screenUsbReady=true;
+    $("btnScrLink").textContent="选择 LCD 屏幕";
+    setStatus("屏幕 USB 已准备好，请再次点击“选择 LCD 屏幕”");
+    log("请点击“选择 LCD 屏幕”，在新授权窗口中选择 QK100 Mk2 LCD");return;
+  }
+  try {
+    scrDev=await choose(0x1919,0x1919,0xff,1,0,64,"屏幕");scrReports=new Reports(scrDev,0);
+    await screenPreflight(scrReports);setStatus("屏幕已连接，通信核对通过");$("btnScrLink").textContent="重新连接屏幕";
+  } catch(e) {
+    if(scrReports)scrReports.detach();scrReports=null;
+    if(scrDev&&scrDev.opened)await scrDev.close();scrDev=null;
+    screenUsbReady=false;$("btnScrLink").textContent="连接屏幕";throw e;
+  }
+}
+async function enterScreenOta() {
+  await scrReports.idle();await normalScreen(scrReports,0x10);
+  writeKind="screen";await send(scrDev,0,Uint8Array.of(0xaa,0xf0),64);await sleep(1000);
+  // A normal F0 reply may be queued during the settling interval; no OTA data yet.
+  for(const packet of scrReports.queue)if(packet[0]===0xff)throw Error("进入 OTA 前收到意外状态");
+  scrReports.queue.length=0;
+}
+async function transferScreen(data) {
+  await send(scrDev,0,buildUpgradeStart(data.length),64);await scrReports.screenAck(0x70,0);
+  for(const frame of firmwarePackets(data.subarray(0,64)))await send(scrDev,0,frame,64);
+  await scrReports.screenAck(0x70,1);
+  for(let off=64;off<data.length;off+=4096){for(const frame of firmwarePackets(data.subarray(off,off+4096)))await send(scrDev,0,frame,64);await scrReports.screenAck(0x70,2);setStatus("屏幕写入中 "+Math.round(Math.min(off+4096,data.length)/data.length*100)+"%");}
+  await scrReports.screenAck(0x70,3,20000);screenFinished=true;log("屏幕最终 CRC/完成应答通过","ok");
+}
+async function screenPostflight() {
+  scrReports.detach();await scrDev.close();scrDev=null;scrReports=null;
+  const deadline=Date.now()+30000;let lastError="",absent=false;
+  while(Date.now()<deadline){
+    const devices=(await navigator.hid.getDevices()).filter(d=>exactDevice(d,0x1919,0x1919,0xff,1,0,64));
+    if(devices.length>1)throw Error("重启后检测到多个屏幕，停止确认");
+    if(!devices.length)absent=true;
+    if(devices.length&&Date.now()>deadline-28500){const dev=devices[0];let reports;
+      try {if(!dev.opened)await dev.open();reports=new Reports(dev,0);const first=await screenPreflight(reports);await sleep(2000);const second=await screenPreflight(reports);if(first.info!==second.info)throw Error("重启后屏幕信息不稳定");if(screenSnapshot&&(first.themeMetadata!==screenSnapshot.themeMetadata||second.themeMetadata!==screenSnapshot.themeMetadata))throw Error("重启后主题配置与写入前不一致");records.push({time:new Date().toISOString(),postflight:second,disconnectObserved:absent});reports.detach();await dev.close();setStatus("屏幕升级通过，重启后通信正常");log("重启后两次屏幕信息核对通过；请确认实体显示","ok");return;}
+      catch(e){lastError=e.message;if(reports)reports.detach();try{await dev.close();}catch(_){} }
+    }await sleep(100);
+  }
+  setStatus("屏幕写入应答通过，重启后通信尚未确认");throw Error("无法确认屏幕重启后的通信："+lastError);
+}
+async function flashScreenFirmware() {
+  if(!scrDev || !scrDev.opened)throw Error("请先连接屏幕");
+  const data=await loadScreenBin(),info=await validateScreen(data);log(info.label+"已校验：SHA256 "+info.sha256);
+  screenSnapshot=await screenPreflight(scrReports);await enterScreenOta();await transferScreen(data);await screenPostflight();
+}
+async function flashScreenImage() {
+  if(!scrDev || !scrDev.opened)throw Error("请先连接屏幕");
+  // Image-only OTA does not reboot; an app transfer follows to finish the official transaction.
+  const image=await loadImageBin(),imageInfo=await validateImage(image),app=await loadScreenBin(),appInfo=await validateScreen(app);
+  log(imageInfo.label+" 已校验："+imageInfo.sha256+"；完成后写入所选 "+appInfo.label);
+  screenSnapshot=await screenPreflight(scrReports);await enterScreenOta();
+  const start=new Uint8Array(8);put32(start,0,image.length);await send(scrDev,0,imageControl(0x65,start),64);await scrReports.screenAck(0x65,0);await sleep(3000);
+  const erase=new Uint8Array(8);put32(erase,4,image.length);await send(scrDev,0,imageControl(0x61,erase),64);await scrReports.screenAck(0x61,0x10,50000);
+  for(let start=0;start<image.length;start+=5700){const end=Math.min(start+5700,image.length);for(let off=start;off<end;off+=57)await send(scrDev,0,imagePacket(off,image.subarray(off,Math.min(off+57,end))),64);await scrReports.screenAck(0x66,end===image.length?3:2,end===image.length?20000:15000);setStatus("图片包写入中 "+Math.round(end/image.length*100)+"%");}
+  log("图片包最终应答通过，继续写入所选屏幕程序","ok");await sleep(120);await transferScreen(app);await screenPostflight();
+}
+async function diagnoseKeyboard(){const devices=await navigator.hid.getDevices();for(const dev of devices.filter(d=>[0x36b0,0x1919].includes(d.vendorId))){log("已授权 "+(dev.productName||"设备")+" "+dev.vendorId.toString(16)+":"+dev.productId.toString(16)+" "+JSON.stringify(collections(dev).map(c=>({page:c.usagePage,usage:c.usage,output:(c.outputReports||[]).map(r=>({id:r.reportId,bytes:reportBytes(r)}))}))));}if(!devices.length)log("尚无已授权设备");}
+async function checkMainConnection(){const dev=await choose(0x36b0,0x3059,0xff00,1,63,63,"有线主控");await dev.close();log("有线主控升级接口检查通过；未进入 IAP、未写入固件","ok");}
+function exportLogs(){const url=URL.createObjectURL(new Blob([JSON.stringify({app:"QK100 Mk2 Flasher",records},null,2)],{type:"application/json"}));const link=document.createElement("a");link.href=url;link.download="qk100-flash-"+new Date().toISOString().replace(/[:.]/g,"-")+".json";link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+$("btnMainPrep").onclick=guard(enterIapMode);$("btnMainLink").onclick=guard(linkIapDevice);$("btnMainFlash").onclick=guard(flashMainFirmware);
+$("btnMainCheck").onclick=guard(checkMainConnection);
+$("btnScrLink").onclick=guard(connectScreen);$("btnScrFlash").onclick=guard(flashScreenFirmware);$("btnImgFlash").onclick=guard(flashScreenImage);
+$("btnDiag").onclick=guard(diagnoseKeyboard);$("btnClear").onclick=()=>{$("log").innerHTML="";};$("btnExport").onclick=exportLogs;
+$("mainFile").onchange=()=>{preparedMain=null;preparedMainInfo=null;refreshControls();const file=$("mainFile").files[0];$("mainInfo").textContent=file?file.name+" · "+file.size+"字节":"请选择本地主控固件";};
+$("mainPreset").onchange=()=>{preparedMain=null;preparedMainInfo=null;refreshControls();$("mainInfo").textContent=$("mainPreset").value==="nobrightfloor"?"保留键灯和 logo 的亮度；亮度为 0 时开灯仍不亮；不调节 LCD 背光":$("mainPreset").value==="official"?"内置官方 v137":"请选择同型号 v137 布局的主控文件";};
+$("scrPreset").onchange=()=>{refreshControls();$("scrInfo").textContent=$("scrPreset").value==="v20"?"已核查修改版 v20":$("scrPreset").value==="official"?"内置官方 v120":"请选择已核查的官方 v120 或 v20 文件";};
+$("scrFile").onchange=()=>{const file=$("scrFile").files[0];$("scrInfo").textContent=file?file.name+" · "+file.size+"字节":"请选择本地屏幕程序";};
+$("imgFile").onchange=()=>{const file=$("imgFile").files[0];$("imgInfo").textContent=file?file.name+" · "+file.size+"字节":"请选择已核查图包；同时写入上面所选屏幕程序";};
+$("imgPreset").onchange=()=>{refreshControls();$("imgInfo").textContent=$("imgPreset").value==="local"?"请选择官方 v120 或 alpha128 图包":IMAGE_PRESETS[$("imgPreset").value].label+" · 同时写入上面所选屏幕程序";};
+window.desktopFlasher?.onHidStatus?.(message=>log(message));
+refreshControls();log("就绪。请使用有线连接，关闭其他正在连接设备的驱动或升级窗口。");
+</script>
+</body>
+</html>

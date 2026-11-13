@@ -1,0 +1,11 @@
+{
+  "name": "qk100mk2-firmware-public",
+  "version": "1.0.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/desktop-flasher.test.mjs && npm --prefix desktop-flasher test",
+    "desktop:start": "npm --prefix desktop-flasher start",
+    "desktop:build": "npm --prefix desktop-flasher run build"
+  }
+}
